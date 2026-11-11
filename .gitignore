@@ -1,0 +1,12 @@
+Data/
+LabData/
+*.exe
+*.pdb
+*.zip
+*.tmp
+crash.txt
+Tests/Evidence/
+Tests/*-test.xml
+Tests/native-results.md
+Tests/audio-device-results.txt
+.vs/
