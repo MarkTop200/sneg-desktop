@@ -6,7 +6,7 @@ using System.Collections.Generic;
 
 namespace Sneg {
  internal sealed class SnowBrick {
-  public double X,Y,VX,VY,Angle,Area,Age;public bool Held,Pinned;public Surface Support;public SnowBrick OnBrick;
+  public double X,Y,VX,VY,Angle,Area,Age,Spin,TipClock;public bool Held,Pinned;public Surface Support;public SnowBrick OnBrick;
   public double Width {get{return Math.Sqrt(Math.Max(0,Area)*2.15);}}
   public double Height {get{return Width/2.15;}}
   public double HalfX {get{double a=Angle*Math.PI/180;return (Math.Abs(Math.Cos(a))*Width+Math.Abs(Math.Sin(a))*Height)/2;}}
@@ -22,12 +22,12 @@ namespace Sneg {
   public void RotateBrick(int wheelDelta){if(HeldBrick==null)return;HeldBrick.Angle=((HeldBrick.Angle+wheelDelta/120.0*15)%360+360)%360;}
   public void ToggleBrickPin(){if(HeldBrick==null)return;HeldBrick.Pinned=!HeldBrick.Pinned;HeldBrick.VX=HeldBrick.VY=0;}
   void UpdateBricks(double dt){foreach(var b in Bricks.OrderByDescending(v=>v.Y).ToArray()){
-   b.Age+=dt;if(b.Held||b.Pinned)continue;
+   b.Age+=dt;if(b.Held||b.Pinned)continue;if(b.Support==null&&b.OnBrick==null){b.Angle=(b.Angle+b.Spin*dt)%360;b.Spin*=Math.Exp(-.6*dt);}
    if(b.OnBrick!=null){var below=b.OnBrick;if(!Bricks.Contains(below)||below.Held||(!below.Pinned&&below.Support==null&&below.OnBrick==null)||Math.Abs(b.X-below.X)>b.HalfX+below.HalfX-2)b.OnBrick=null;else{b.Y=below.Y-below.HalfY-b.HalfY;b.VX=b.VY=0;continue;}}
    if(b.Support!=null){var support=b.Support;if(!Surfaces.Contains(support)||!support.Active||b.X<support.Left||b.X>=support.Left+support.Width)b.Support=null;else{b.Y=support.Y-support.Height(b.X)-b.HalfY;b.VY=0;b.VX*=Math.Exp(-5*dt);b.X+=b.VX*dt;continue;}}
    double oy=b.Y;b.VY=Math.Min(1800,b.VY+550*dt);double nx=b.X+b.VX*dt,ny=b.Y+b.VY*dt,hit=2,levelHit=0;Surface landing=null;SnowBrick block=null;
    foreach(var s in Surfaces)if(s.Active){double level=s.Y-s.Height(nx)-b.HalfY;if(oy<=level+.1&&ny>=level&&ny>oy){double t=Math.Max(0,(level-oy)/(ny-oy)),x=b.X+(nx-b.X)*t;if(x>=s.Left&&x<s.Left+s.Width&&(s.Floor||s.Visible(x,level+b.HalfY-1))&&t<hit){hit=t;landing=s;block=null;levelHit=level;}}}
-   foreach(var other in Bricks)if(other!=b&&!other.Held&&(other.Pinned||other.Support!=null||other.OnBrick!=null)){double level=other.Y-other.HalfY-b.HalfY;if(oy<=level+.1&&ny>=level&&ny>oy){double t=Math.Max(0,(level-oy)/(ny-oy)),x=b.X+(nx-b.X)*t;if(Math.Abs(x-other.X)<(b.HalfX+other.HalfX)*.8&&t<hit){hit=t;landing=null;block=other;levelHit=level;}}}
+   foreach(var other in Bricks)if(other!=b&&!other.Held&&Math.Abs(b.VX-other.VX)<100&&(other.Pinned||other.Support!=null&&Math.Abs(other.VX)<70||other.OnBrick!=null)){double level=other.Y-other.HalfY-b.HalfY;if(oy<=level+.1&&ny>=level&&ny>oy){double t=Math.Max(0,(level-oy)/(ny-oy)),x=b.X+(nx-b.X)*t;if(Math.Abs(x-other.X)<(b.HalfX+other.HalfX)*.8&&t<hit){hit=t;landing=null;block=other;levelHit=level;}}}
    b.X=hit<=1?b.X+(nx-b.X)*hit:nx;b.Y=hit<=1?levelHit:ny;if(hit<=1){b.Support=landing;b.OnBrick=block;b.VY=0;b.VX*=.35;}
   }double bottom=Monitors.Count==0?2500:Monitors.Max(r=>r.Bottom)+300;Bricks.RemoveAll(b=>!b.Held&&!b.Pinned&&b.Y-b.HalfY>bottom);}
   public void ShakeSnow(PointF from,PointF to,double elapsed){if(!Settings.MouseShake||Tool!=Tool.None||HeldBrick!=null||Paused||elapsed<=0||elapsed>.25)return;double dx=to.X-from.X,dy=to.Y-from.Y,distance=Math.Sqrt(dx*dx+dy*dy);if(distance<1||distance/elapsed<40)return;int steps=Math.Min(80,Math.Max(1,(int)Math.Ceiling(distance/8)));
