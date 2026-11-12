@@ -39,7 +39,7 @@ namespace Sneg {
    }
    g.FillEllipse(Brushes.LightSteelBlue,57,95,7,7);g.DrawEllipse(Pens.SlateGray,57,95,7,7);
   }
-  internal static void DrawPointer(Graphics g,SnowWorld world){if(!world.ShowTool||(world.Tool!=Tool.Mitten&&world.Tool!=Tool.Shovel&&world.Tool!=Tool.Handful))return;var save=g.Save();
+  internal static void DrawPointer(Graphics g,SnowWorld world){if(world.ShowTool&&world.Tool==Tool.Brick){if(world.HeldBrick==null)BrickArt.DrawMould(g,world.Pointer.X,world.Pointer.Y,58,27,0);return;}if(!world.ShowTool||(world.Tool!=Tool.Mitten&&world.Tool!=Tool.Shovel&&world.Tool!=Tool.Handful))return;var save=g.Save();
    float radius=(world.Tool==Tool.Mitten||world.Tool==Tool.Handful)?24:65;using(var p=new Pen(Color.FromArgb(world.ToolDown?125:65,180,230,246),1)){p.DashStyle=DashStyle.Dot;g.DrawEllipse(p,world.Pointer.X-radius,world.Pointer.Y-radius,radius*2,radius*2);}
    g.TranslateTransform(world.Pointer.X+7,world.Pointer.Y+4);g.RotateTransform(world.ToolDown?(float)(Math.Sin(world.Time*16)*5):(world.Tool==Tool.Mitten||world.Tool==Tool.Handful)?-12:12);
    var img=(world.Tool==Tool.Mitten||world.Tool==Tool.Handful)?Mitten:Shovel;g.DrawImage(img,(world.Tool==Tool.Mitten||world.Tool==Tool.Handful)?-33:-38,(world.Tool==Tool.Mitten||world.Tool==Tool.Handful)?-67:-85,(world.Tool==Tool.Mitten||world.Tool==Tool.Handful)?66:76,(world.Tool==Tool.Mitten||world.Tool==Tool.Handful)?74:86);g.Restore(save);

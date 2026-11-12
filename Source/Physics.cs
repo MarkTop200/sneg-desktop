@@ -4,15 +4,17 @@ using System.Collections.Generic;
 using System.Linq;
 
 namespace Sneg {
- internal sealed class Surface {
+ internal sealed partial class Surface {
   public long Id; public uint Pid; public IntPtr Window; public double Left,Y,Width; public bool Active=true,Floor;
-  public double[] Heights; public List<Rectangle> Occluders=new List<Rectangle>();
+  public double[] Pending;public double[] Heights; public List<Rectangle> Occluders=new List<Rectangle>();
+  public readonly List<Rectangle> SkyBlockers=new List<Rectangle>();
+  public bool SkyBlocked(double x){return Floor&&SkyBlockers.Any(r=>x>=r.Left&&x<r.Right&&r.Top<Y);}
   public double PlowBank,PlowClock;
   public double MaxHeight=60;
   public double OverflowLeft,OverflowRight,SpillLeftClock,SpillRightClock,EdgeClock;
-  public Surface(long id,double x,double y,double width){Id=id;Left=x;Y=y;Width=Math.Max(1,width);Heights=new double[Math.Max(1,(int)Math.Ceiling(Width/6))];}
+  public Surface(long id,double x,double y,double width){Id=id;Left=x;Y=y;Width=Math.Max(1,width);Heights=new double[Math.Max(1,(int)Math.Ceiling(Width/6))];Pending=new double[Heights.Length];}
   public double Cell {get{return Width/Heights.Length;}}
-  public double Area {get{return Heights.Sum()*Cell;}}
+  public double Area {get{return Heights.Sum()*Cell+Pending.Sum();}}
   public double LeftWrap {get{return Floor?0:Math.Min(30,Math.Sqrt(Math.Max(0,Heights[0]))*4);}}
   public double RightWrap {get{return Floor?0:Math.Min(30,Math.Sqrt(Math.Max(0,Heights[Heights.Length-1]))*4);}}
   public bool WrapContains(double x,double y){return !Floor&&y>=Y-2&&((x>=Left-8&&x<=Left+26&&y<=Y+LeftWrap)||(x>=Left+Width-26&&x<=Left+Width+8&&y<=Y+RightWrap));}
@@ -25,32 +27,33 @@ namespace Sneg {
   }
   public bool Visible(double x,double y){if(!Active||x<Left||x>=Left+Width)return false;foreach(var r in Occluders)if(x>=r.Left&&x<r.Right&&y>=r.Top&&y<r.Bottom)return false;return true;}
   public double Add(double x,double area){
-   if(area<=0)return 0;int center=Index(x);double remaining=area;
+   if(area<=0||SkyBlocked(x))return 0;int center=Index(x);double remaining=area;
    // Fill nearby space before sending excess to the window edges.
    for(int radius=0;radius<Heights.Length&&remaining>.00001;radius++){
     int a=center-radius,b=center+radius;
-    if(a>=0){double put=Math.Min(remaining,Math.Max(0,MaxHeight-Heights[a])*Cell);Heights[a]+=put/Cell;remaining-=put;}
-    if(radius>0&&b<Heights.Length){double put=Math.Min(remaining,Math.Max(0,MaxHeight-Heights[b])*Cell);Heights[b]+=put/Cell;remaining-=put;}
+    if(a>=0&&!SkyBlocked(Left+(a+.5)*Cell)){double put=Math.Min(remaining,Math.Max(0,MaxHeight-Heights[a])*Cell);Heights[a]+=put/Cell;remaining-=put;}
+    if(radius>0&&b<Heights.Length&&!SkyBlocked(Left+(b+.5)*Cell)){double put=Math.Min(remaining,Math.Max(0,MaxHeight-Heights[b])*Cell);Heights[b]+=put/Cell;remaining-=put;}
    }
    if(remaining>0&&!Floor){double right=Math.Max(0,Math.Min(1,(x-Left)/Width));OverflowLeft+=remaining*(1-right);OverflowRight+=remaining*right;}
    return area-remaining;
   }
-  public double Take(double x,double radius,double budget){double total=0;int a=Index(x-radius),b=Index(x+radius);for(int i=a;i<=b&&budget>0;i++){double q=Math.Min(Heights[i]*Cell,budget);Heights[i]-=q/Cell;budget-=q;total+=q;}return total;}
-  public double Resize(double width){width=Math.Max(1,width);var old=Heights;double oldCell=Cell,oldWidth=Width;Width=width;Heights=new double[Math.Max(1,(int)Math.Ceiling(width/6))];double retained=0;
+  public double Deposit(double x,double area,bool debris=false){if(area<=0||Floor&&SkyBlocked(x)&&!debris)return 0;if(Floor&&debris)return DepositImpact(x,area);if(Floor){int[] weights={1,4,6,4,1};int total=0;for(int k=0;k<5;k++){int index=Index(x+(k-2)*Cell);if(debris||!SkyBlocked(Left+(index+.5)*Cell))total+=weights[k];}if(total==0)return 0;for(int k=0;k<5;k++){int index=Index(x+(k-2)*Cell);if(!debris&&SkyBlocked(Left+(index+.5)*Cell))continue;double amount=area*weights[k]/total,put=Math.Min(amount,Math.Max(0,MaxHeight-Heights[index])*Cell);Heights[index]+=put/Cell;Pending[index]+=amount-put;}return area;}double added=0;int[] weight={1,4,6,4,1};for(int i=0;i<5;i++)added+=Add(Math.Max(Left,Math.Min(Left+Width-.001,x+(i-2)*6)),area*weight[i]/16.0);return added;}
+  public double Take(double x,double radius,double budget){double total=0;int a=Index(x-radius),b=Index(x+radius);for(int i=a;i<=b&&budget>0;i++){double q=Math.Min(Heights[i]*Cell,budget);Heights[i]-=q/Cell;budget-=q;total+=q;if(Floor&&budget>0){double extra=Math.Min(Pending[i],budget);Pending[i]-=extra;budget-=extra;total+=extra;}}return total;}
+  public double Resize(double width){width=Math.Max(1,width);var old=Heights.Select((h,i)=>h+Pending[i]/Cell).ToArray();double oldCell=Cell,oldWidth=Width;Width=width;Heights=new double[Math.Max(1,(int)Math.Ceiling(width/6))];Pending=new double[Heights.Length];double retained=0;
    // Integrate overlapping bins: conserve area retained inside the new extent.
-   for(int j=0;j<Heights.Length;j++){double l=j*Cell,r=Math.Min(width,(j+1)*Cell),area=0;int a=(int)(l/oldCell),b=Math.Min(old.Length-1,(int)(r/oldCell));for(int i=a;i<=b;i++)area+=Math.Max(0,Math.Min(r,(i+1)*oldCell)-Math.Max(l,i*oldCell))*old[i];Heights[j]=area/Cell;retained+=area;}
+   for(int j=0;j<Heights.Length;j++){double l=j*Cell,r=Math.Min(width,(j+1)*Cell),area=0;int a=(int)(l/oldCell),b=Math.Min(old.Length-1,(int)(r/oldCell));for(int i=a;i<=b;i++)area+=Math.Max(0,Math.Min(r,(i+1)*oldCell)-Math.Max(l,i*oldCell))*old[i];Heights[j]=area/Cell;if(Floor&&Heights[j]>MaxHeight){Pending[j]=(Heights[j]-MaxHeight)*Cell;Heights[j]=MaxHeight;}retained+=area;}
    return Math.Max(0,old.Sum()*oldCell-retained);
   }
-  public void Relax(){for(int i=0;i<Heights.Length-1;i++){double delta=Heights[i]-Heights[i+1];if(Math.Abs(delta)>Cell*0.65){double q=(Math.Abs(delta)-Cell*0.65)*0.2;if(delta>0){Heights[i]-=q;Heights[i+1]+=q;}else{Heights[i]+=q;Heights[i+1]-=q;}}}}
+  public void Relax(){if(Floor){RelaxFloor();return;}for(int i=0;i<Heights.Length-1;i++){if(SkyBlocked(Left+(i+.5)*Cell)){Heights[i]=0;continue;}if(SkyBlocked(Left+(i+1.5)*Cell)){Heights[i+1]=0;continue;}double delta=Heights[i]-Heights[i+1];if(Math.Abs(delta)>Cell*0.65){double q=(Math.Abs(delta)-Cell*0.65)*0.2;if(delta>0){Heights[i]-=q;Heights[i+1]+=q;}else{Heights[i]+=q;Heights[i+1]-=q;}}}}
  }
- internal sealed class Flake {public double X,Y,VX,VY,Radius,Phase,Age,SnowArea,Spin,SpinVelocity,IgnoreUntil;public long IgnoreSurface;public int Alpha;public bool Debris,GroundOnly,Clump,PlowSpray;}
+ internal sealed class Flake {public double X,Y,VX,VY,Radius,Phase,Age,SnowArea,Spin,SpinVelocity,IgnoreUntil;public long IgnoreSurface;public int Alpha;public bool Debris,GroundOnly,Clump,PlowSpray,ImpactDust;}
  internal sealed class Ball {
   public double X,Y,VX,VY,Area,Age; public Surface Support;public Ball OnBall;public bool Held,Face,Loose,ThrowArmed;public Surface CarrySource;
   public double Radius {get{return Math.Sqrt(Math.Max(0,Area)/Math.PI);}}
   public bool Visible {get{return Support==null||Support.Active;}}
  }
- internal enum Tool {None,Snowball,Mitten,Shovel,Handful}
- internal sealed class SnowWorld {
+ internal enum Tool {None,Snowball,Mitten,Shovel,Handful,Brick}
+ internal sealed partial class SnowWorld {
   public readonly List<Surface> Surfaces=new List<Surface>();public readonly List<Flake> Flakes=new List<Flake>();public readonly List<Ball> Balls=new List<Ball>();
   public List<Rectangle> Monitors=new List<Rectangle>();public readonly Settings Settings;
   public Action<string,double> Sound;
@@ -61,20 +64,20 @@ namespace Sneg {
   public SnowWorld(Settings settings,int seed){Settings=settings;random=new Random(seed);EffectiveLimit=settings.MaxParticles;}
   public void Advance(double elapsed){if(Paused||elapsed>0.25||elapsed<0){accumulator=0;return;}accumulator+=elapsed;int n=0;while(accumulator+1e-10>=Step&&n++<8){Update(Step);accumulator-=Step;}if(n>8)accumulator=0;}
   public void ResetClock(){accumulator=0;}
-  public void Clear(){CancelDrag();Flakes.Clear();Balls.Clear();foreach(var s in Surfaces){Array.Clear(s.Heights,0,s.Heights.Length);s.PlowBank=s.PlowClock=0;s.OverflowLeft=s.OverflowRight=s.SpillLeftClock=s.SpillRightClock=s.EdgeClock=0;}Plowing=false;spawn=0;}
-  public void CancelDrag(){ToolDown=false;if(Held!=null){if(Held.Loose){Balls.Remove(Held);Scatter(Held.Area,Held.X,Held.Y,0,20,Held.CarrySource);Held=null;samples.Clear();return;}Held.Held=false;Held.VX=0;Held.VY=0;if(Held.Radius<4)Balls.Remove(Held);}Held=null;samples.Clear();}
+  public void Clear(){CancelDrag();Flakes.Clear();Balls.Clear();Bricks.Clear();HeldBrick=null;foreach(var s in Surfaces){Array.Clear(s.Heights,0,s.Heights.Length);Array.Clear(s.Pending,0,s.Pending.Length);s.PlowBank=s.PlowClock=0;s.OverflowLeft=s.OverflowRight=s.SpillLeftClock=s.SpillRightClock=s.EdgeClock=0;}Plowing=false;spawn=0;}
+  public void CancelDrag(){DropBrick(true);ToolDown=false;if(Held!=null){if(Held.Loose){Balls.Remove(Held);Scatter(Held.Area,Held.X,Held.Y,0,20,Held.CarrySource);Held=null;samples.Clear();return;}Held.Held=false;Held.VX=0;Held.VY=0;if(Held.Radius<4)Balls.Remove(Held);}Held=null;samples.Clear();}
   public void Sync(List<WindowInfo> windows,List<Rectangle> workAreas){var seen=new HashSet<long>();var blockers=new List<Rectangle>();
    foreach(var w in windows){long id=w.Handle.ToInt64();if(w.Surface){var s=Surfaces.Find(v=>v.Id==id);if(s!=null&&s.Pid!=w.Pid){RemoveSurface(s);s=null;}if(s==null){s=new Surface(id,w.Bounds.Left,w.Bounds.Top,w.Bounds.Width){Window=w.Handle,Pid=w.Pid};Surfaces.Add(s);}
     double dx=w.Bounds.Left-s.Left,dy=w.Bounds.Top-s.Y;
-    if(Math.Abs(dx)>.5||Math.Abs(dy)>.5)Shed(s,dx,dy);
-    double oldWidth=s.Width;if(Math.Abs(oldWidth-w.Bounds.Width)>.1){double lost=s.Resize(w.Bounds.Width);if(lost>0)Debris(s.Left+w.Bounds.Width,s.Y,Math.Min(20,(int)(lost/20)+1));}
+    bool resizing=Math.Abs(s.Width-w.Bounds.Width)>.1&&Math.Abs(dy)<=.5;
+    if(resizing)ResizeRoof(s,w.Bounds.Left,w.Bounds.Width);else{if(Math.Abs(dx)>.5||Math.Abs(dy)>.5){Shed(s,dx,dy);foreach(var brick in Bricks)if(brick.Support==s){brick.Support=null;brick.OnBrick=null;}}if(Math.Abs(s.Width-w.Bounds.Width)>.1)s.Resize(w.Bounds.Width);}
     s.Left=w.Bounds.Left;s.Y=w.Bounds.Top;s.Active=true;s.Occluders=new List<Rectangle>(blockers);seen.Add(id);
-    foreach(var b in Balls)if(b.Support==s&&!b.Held){b.X+=dx;b.Y+=dy;if(b.X-b.Radius>s.Left+s.Width){b.Support=null;b.OnBall=null;}}
+    foreach(var b in Balls)if(b.Support==s&&!b.Held){if(!resizing){b.X+=dx;b.Y+=dy;}if(b.X<s.Left||b.X>=s.Left+s.Width){b.Support=null;b.OnBall=null;}}
    }blockers.Add(w.Bounds);}
    for(int i=Surfaces.Count-1;i>=0;i--){var s=Surfaces[i];if(s.Floor)continue;if(!seen.Contains(s.Id)){if(Native.IsWindow(s.Window))s.Active=false;else RemoveSurface(s);}}
    // The physical screen edge stays visible even above a taskbar or a maximized window.
    var ground=Monitors.Count>0?Monitors:workAreas;
-   for(int k=0;k<ground.Count;k++){var r=ground[k];long id=-1-k;seen.Add(id);var s=Surfaces.Find(v=>v.Id==id);if(s==null){s=new Surface(id,r.Left,r.Bottom,r.Width){Floor=true};Surfaces.Add(s);}if(Math.Abs(s.Width-r.Width)>.1)s.Resize(r.Width);double dx=r.Left-s.Left,dy=r.Bottom-s.Y;s.Left=r.Left;s.Y=r.Bottom;SetGroundLimit(s,r.Height);s.Active=true;s.Occluders.Clear();foreach(var b in Balls)if(b.Support==s&&!b.Held){b.X+=dx;b.Y+=dy;}}
+   for(int k=0;k<ground.Count;k++){var r=ground[k];long id=-1-k;seen.Add(id);var s=Surfaces.Find(v=>v.Id==id);if(s==null){s=new Surface(id,r.Left,r.Bottom,r.Width){Floor=true};Surfaces.Add(s);}if(Math.Abs(s.Width-r.Width)>.1)s.Resize(r.Width);double dx=r.Left-s.Left,dy=r.Bottom-s.Y;s.Left=r.Left;s.Y=r.Bottom;SetGroundLimit(s,r.Height);s.Active=true;s.Occluders.Clear();s.SkyBlockers.Clear();s.SkyBlockers.AddRange(windows.Where(w=>w.Surface&&w.Bounds.Top<r.Bottom&&w.Bounds.Bottom>r.Top).Select(w=>w.Bounds));foreach(var b in Balls)if(b.Support==s&&!b.Held){b.X+=dx;b.Y+=dy;}}
    foreach(var s in Surfaces.Where(v=>v.Floor&&!seen.Contains(v.Id)).ToArray())RemoveSurface(s);
   }
   internal void Shed(Surface s,double dx,double dy){
@@ -84,23 +87,26 @@ namespace Sneg {
     double mean=area/Math.Max(1,s.Width);int count=Math.Max(1,(int)Math.Ceiling(s.Width/(34+mean)));
     count=Math.Min(Math.Min(32,s.Heights.Length),Math.Min(count,Math.Max(1,EffectiveLimit/2)));
     // Reserve room for falling chunks by replacing decorative airborne flakes first.
-    for(int i=Flakes.Count-1;i>=0&&Flakes.Count+count>EffectiveLimit;i--)if(!Flakes[i].Debris)Flakes.RemoveAt(i);
+    for(int i=Flakes.Count-1;i>=0&&Flakes.Count+count>EffectiveLimit;i--)if(!Flakes[i].Debris&&!Flakes[i].ImpactDust)Flakes.RemoveAt(i);
     count=Math.Min(count,Math.Max(0,EffectiveLimit-Flakes.Count));
+    if(count==0&&Settings.Accumulate){for(int i=0;i<s.Heights.Length;i++)SettleToFloor(s.Left+(i+.5)*s.Cell,s.Heights[i]*s.Cell+s.Pending[i],s);SettleToFloor(s.Left,s.OverflowLeft,s);SettleToFloor(s.Left+s.Width,s.OverflowRight,s);}
     if(count>0)for(int group=0;group<count;group++){
      int from=group*s.Heights.Length/count,to=(group+1)*s.Heights.Length/count;double mass=0,x=0,y=0;
-     for(int i=from;i<to;i++){double q=s.Heights[i]*s.Cell;mass+=q;x+=(s.Left+(i+.5)*s.Cell)*q;y+=(s.Y-s.Heights[i]*.5)*q;}
+     for(int i=from;i<to;i++){double q=s.Heights[i]*s.Cell+s.Pending[i];mass+=q;x+=(s.Left+(i+.5)*s.Cell)*q;y+=(s.Y-s.Heights[i]*.5)*q;}
      if(group==0){mass+=s.OverflowLeft;x+=(s.Left-2)*s.OverflowLeft;y+=(s.Y-40)*s.OverflowLeft;}
      if(group==count-1){mass+=s.OverflowRight;x+=(s.Left+s.Width+2)*s.OverflowRight;y+=(s.Y-40)*s.OverflowRight;}
      if(mass>.01)Flakes.Add(CreateClump(mass,x/mass,y/mass,s.Id,Math.Max(-160,Math.Min(160,dx*2))+(random.NextDouble()-.5)*90,25+random.NextDouble()*90+Math.Max(0,dy)*2));
     }
-    Array.Clear(s.Heights,0,s.Heights.Length);s.OverflowLeft=s.OverflowRight=s.SpillLeftClock=s.SpillRightClock=s.EdgeClock=0;
+    Array.Clear(s.Heights,0,s.Heights.Length);Array.Clear(s.Pending,0,s.Pending.Length);s.OverflowLeft=s.OverflowRight=s.SpillLeftClock=s.SpillRightClock=s.EdgeClock=0;
    }
    foreach(var ball in Balls)if(ball.Support==s&&!ball.Held){ball.Support=null;ball.OnBall=null;ball.Face=false;ball.VX=Math.Max(-100,Math.Min(100,dx));ball.VY=Math.Max(35,Math.Min(200,dy*2));}
   }
-  void RemoveSurface(Surface s){Shed(s,0,0);Surfaces.Remove(s);}
+  void SettleToFloor(double x,double area,Surface source){var floor=Surfaces.FirstOrDefault(v=>v!=source&&v.Floor&&v.Active&&x>=v.Left&&x<v.Left+v.Width);if(floor!=null)floor.Deposit(x,area,true);}
+  public void TrimDecorative(){for(int i=Flakes.Count-1;i>=0&&Flakes.Count>EffectiveLimit;i--)if(!Flakes[i].Debris&&!Flakes[i].ImpactDust)Flakes.RemoveAt(i);}
+  void RemoveSurface(Surface s){Shed(s,0,0);Surfaces.Remove(s);foreach(var b in Bricks)if(b.Support==s)b.Support=null;}
   internal static double ClumpRadius(double area){return Math.Max(.5,Math.Min(96,Math.Sqrt(Math.Max(0,area)/Math.PI)));}
   Flake CreateClump(double amount,double x,double y,long source,double vx,double vy){return new Flake{X=x,Y=y,VX=vx,VY=vy,Radius=ClumpRadius(amount),SnowArea=amount,IgnoreSurface=source,Phase=random.NextDouble()*6.28,Spin=random.NextDouble()*360,SpinVelocity=(random.NextDouble()-.5)*150,Alpha=250,Debris=true,Clump=true};}
-  void SetGroundLimit(Surface s,int height){s.MaxHeight=Settings.FillDesktop?Math.Max(1,height):60;for(int i=0;i<s.Heights.Length;i++)s.Heights[i]=Math.Min(s.Heights[i],s.MaxHeight);}
+  void SetGroundLimit(Surface s,int height){s.AvalancheHeight=Settings.FloorAvalancheHeight;s.MaxHeight=Settings.FillDesktop?Math.Max(1,height):60;for(int i=0;i<s.Heights.Length;i++)s.Heights[i]=Math.Min(s.Heights[i],s.MaxHeight);}
   public void RefreshGroundLimits(){foreach(var s in Surfaces)if(s.Floor){var r=Monitors.FirstOrDefault(m=>m.Left==s.Left&&m.Bottom==s.Y);if(r.Width>0)SetGroundLimit(s,r.Height);}}
   public void Seed(){foreach(var s in Surfaces)if(s.Active)for(int i=0;i<s.Heights.Length;i++)s.Heights[i]=14+3*Math.Sin(i*.23);}
   public void FillWindows(){foreach(var s in Surfaces)if(s.Active&&!s.Floor)for(int i=0;i<s.Heights.Length;i++)s.Heights[i]=60;}
@@ -119,19 +125,17 @@ namespace Sneg {
   }
   void Debris(double x,double y,int count){for(int i=0;i<count&&Flakes.Count<EffectiveLimit;i++)Flakes.Add(new Flake{X=x+(random.NextDouble()-.5)*45,Y=y-4,VY=45+random.NextDouble()*75,Radius=1+random.NextDouble()*2,Phase=random.NextDouble()*6,Alpha=190,Debris=true});}
   void Spawn(){if(Monitors.Count==0)return;int total=Monitors.Sum(r=>r.Width),pick=random.Next(total);Rectangle m=Monitors[0];foreach(var r in Monitors){if(pick<r.Width){m=r;break;}pick-=r.Width;}
-   // A separate share of the snowfall travels in front of windows to feed the screen-edge drift.
-   bool ground=random.NextDouble()<.32;
-   double spawnY=ground?m.Top+m.Height*.60+random.NextDouble()*m.Height*.15:m.Top-8;
-   if(ground){var floor=Surfaces.Find(v=>v.Floor&&v.Left==m.Left&&v.Y==m.Bottom);if(floor!=null)spawnY=Math.Min(spawnY,floor.Y-floor.Heights.Max()-8);}
-
+   // Every snowflake enters from the top; window ledges intercept it naturally.
+   bool ground=false;double spawnY=m.Top-8;
    Flakes.Add(new Flake{X=m.Left+pick,Y=spawnY,VY=45+random.NextDouble()*75,Radius=(1+random.NextDouble()*2.3)*Settings.Size/100.0,Phase=random.NextDouble()*6.28,Alpha=110+random.Next(140),GroundOnly=ground});}
   void Update(double dt){Time+=dt;double smooth=1-Math.Exp(-3*dt);wind+=(Settings.Wind-wind)*smooth;speed+=(Settings.Speed-speed)*smooth;if(Emitting){spawn+=Settings.Intensity*dt;while(spawn>=1){spawn--;if(Flakes.Count<EffectiveLimit)Spawn();}}
    double bottom=Monitors.Count==0?2000:Monitors.Max(r=>r.Bottom)+150;
-   for(int i=Flakes.Count-1;i>=0;i--){var f=Flakes[i];double ox=f.X,oy=f.Y;f.Age+=dt;if(f.Debris){f.VY=Math.Min(1300,f.VY+620*dt);f.VX*=Math.Exp(-.4*dt);}f.Spin+=f.SpinVelocity*dt;f.X+=(wind*(f.Debris ? .25 : 1)+f.VX+Math.Sin(Time*1.5+f.Phase)*(f.Debris?5:16))*dt;f.Y+=f.VY*(f.Debris?1:speed/100)*dt;Surface best=null;double bestT=2;
-    foreach(var s in Surfaces)if(!f.PlowSpray&&s.Active&&(!f.GroundOnly||s.Floor)&&(f.IgnoreSurface==0||s.Id!=f.IgnoreSurface||f.IgnoreUntil>0&&f.Age>=f.IgnoreUntil)){double level=s.Y-s.Height(f.X)-(f.Clump?f.Radius*.65:0);if(f.Y>=level&&(oy<=level||f.IgnoreUntil>0&&f.VY>0&&oy<=s.Y)){double t=(level-oy)/Math.Max(.0001,f.Y-oy),x=ox+(f.X-ox)*t;if(s.Visible(x,level+(f.Clump?f.Radius*.65:0)-1)&&t<bestT){best=s;bestT=t;}}}
-    if(best!=null){if(Settings.Accumulate)best.Add(ox+(f.X-ox)*bestT,f.SnowArea>0?f.SnowArea:Math.PI*f.Radius*f.Radius*2);Flakes.RemoveAt(i);}else if(f.Y>bottom||f.Age>(f.PlowSpray?1.25:50))Flakes.RemoveAt(i);
+   for(int i=Flakes.Count-1;i>=0;i--){var f=Flakes[i];double ox=f.X,oy=f.Y;f.Age+=dt;bool physical=f.Debris||f.ImpactDust;if(physical){f.VY=Math.Min(1300,f.VY+620*dt);f.VX*=Math.Exp(-.4*dt);}f.Spin+=f.SpinVelocity*dt;f.X+=(wind*(physical ? .25 : 1)+f.VX+Math.Sin(Time*1.5+f.Phase)*(physical?5:16))*dt;f.Y+=f.VY*(physical?1:speed/100)*dt;if(f.ImpactDust&&!f.Debris){var sourceFloor=Surfaces.Find(v=>v.Floor&&v.Id==f.IgnoreSurface);if(sourceFloor!=null&&sourceFloor.SkyBlocked(f.X)){f.X=ox;f.VX=-f.VX*.35;}}Surface best=null;double bestT=2;
+    foreach(var s in Surfaces)if(!f.PlowSpray&&s.Active&&(!s.Floor||f.Debris||!s.SkyBlocked(f.X))&&(!f.GroundOnly||s.Floor)&&(f.IgnoreSurface==0||s.Id!=f.IgnoreSurface||f.IgnoreUntil>0&&f.Age>=f.IgnoreUntil)){double level=s.Y-s.Height(f.X)-(f.Clump?f.Radius*.65:0);if(f.Y>=level&&(oy<=level||physical&&f.VY>0&&oy<=s.Y)){double t=Math.Max(0,(level-oy)/Math.Max(.0001,f.Y-oy)),x=ox+(f.X-ox)*t;if(s.Visible(x,level+(f.Clump?f.Radius*.65:0)-1)&&t<bestT){best=s;bestT=t;}}}
+    if(best!=null){if(Settings.Accumulate){double mass=f.SnowArea>0?f.SnowArea:Math.PI*f.Radius*f.Radius*2,x=ox+(f.X-ox)*bestT;if(!f.Debris){if(f.ImpactDust)best.DepositSnowflake(x,mass,Math.Max(.5,f.Radius));else LandSnowflake(best,f,x,mass);}else if(best.Floor&&f.Clump&&!f.ImpactDust)LandHeap(best,f,x,mass);else best.Deposit(x,mass,f.Debris);}Flakes.RemoveAt(i);}else if(f.Y>bottom||f.Age>(f.PlowSpray?1.25:50))Flakes.RemoveAt(i);
    }
-   foreach(var s in Surfaces)if(s.Active){s.Relax();EdgeOverflow(s,dt);}
+   foreach(var s in Surfaces)if(s.Active){if(s.Floor)s.AvalancheHeight=Settings.FloorAvalancheHeight;s.Relax();EdgeOverflow(s,dt);}
+   UpdateBricks(dt);
    // Bottom balls first: each upper sphere resolves against its current support.
    foreach(var b in Balls.OrderByDescending(v=>v.Y).ToArray()){
     b.Age+=dt;if(!Balls.Contains(b)||b.Held||!b.Visible)continue;double r=b.Radius;
@@ -161,13 +165,13 @@ namespace Sneg {
   public void StartPlow(){Plowing=true;plowTime=0;PlowDirection=random.Next(2)==0?1:-1;PlowX=Monitors.Count==0?0:PlowDirection>0?Monitors.Min(r=>r.Left)-50:Monitors.Max(r=>r.Right)+50;}
   public Ball PickBall(PointF p){return Balls.LastOrDefault(b=>b.Visible&&Math.Pow(p.X-b.X,2)+Math.Pow(p.Y-b.Y,2)<=b.Radius*b.Radius&&(b.Support==null||b.Support.Visible(p.X,p.Y)));}
   public Surface PickSnow(PointF p){return Surfaces.FirstOrDefault(s=>s.Active&&(((p.X>=s.Left&&p.X<s.Left+s.Width&&p.Y>=s.Y-s.Height(p.X)-2&&p.Y<=s.Y+1)||s.WrapContains(p.X,p.Y)))&&s.Heights[s.Index(p.X)]>.5&&s.Visible(Math.Max(s.Left,Math.Min(s.Left+s.Width-.01,p.X)),Math.Min(s.Y-1,p.Y)));}
-  public void BeginDrag(PointF p){if(Tool==Tool.None||Paused)return;ToolDown=true;lastThrowVX=lastThrowVY=0;lastMoveTime=-100;previousPointer=p;prevPointerTime=Time;samples.Clear();samples.Enqueue(new PointerSample(p,Time));if(Tool==Tool.Handful){var source=PickSnow(p);if(source==null||Balls.Count>=60)return;Held=new Ball{X=p.X,Y=p.Y,Held=true,Loose=true,CarrySource=source};Balls.Add(Held);}if(Tool==Tool.Snowball){Held=PickBall(p);if(Held==null){if(PickSnow(p)==null||Balls.Count>=60)return;Held=new Ball{X=p.X,Y=p.Y,Held=true};Balls.Add(Held);}Held.Held=true;Held.ThrowArmed=false;Held.Support=null;Held.OnBall=null;Held.Face=false;foreach(var b in Balls)if(b.OnBall==Held){b.OnBall=null;b.Support=null;b.Face=false;}}Drag(p);}
-  public void Drag(PointF p){if(Tool==Tool.None||Paused)return;double dx=p.X-previousPointer.X,dy=p.Y-previousPointer.Y;if(dx*dx+dy*dy>.0025){double movementTime=Math.Max(.008,Time-prevPointerTime);lastThrowVX=Math.Max(-1800,Math.Min(1800,dx/movementTime));lastThrowVY=Math.Max(-1800,Math.Min(1800,dy/movementTime));lastMoveTime=Time;}int n=Math.Max(1,(int)Math.Ceiling(Math.Sqrt(dx*dx+dy*dy)/5));n=Math.Min(n,3000);
-   for(int j=1;j<=n;j++){double x=previousPointer.X+dx*j/n,y=previousPointer.Y+dy*j/n;foreach(var s in Surfaces){bool wrap=s.WrapContains(x,y);double sx=Math.Max(s.Left,Math.Min(s.Left+s.Width-.01,x));if(!s.Active||(!wrap&&(x<s.Left||x>=s.Left+s.Width))||!s.Visible(sx,Math.Min(y,s.Y-1)))continue;if(!wrap&&Math.Abs(y-(s.Y-s.Height(x)))>48)continue;
+  public void BeginDrag(PointF p){if(Paused||Tool==Tool.None&&!Bricks.Any(b=>b.Contains(p)))return;ToolDown=true;lastThrowVX=lastThrowVY=0;lastMoveTime=-100;previousPointer=p;prevPointerTime=Time;samples.Clear();samples.Enqueue(new PointerSample(p,Time));if(Tool==Tool.Brick||Tool==Tool.None){BeginBrick(p);return;}if(Tool==Tool.Handful){var source=PickSnow(p);if(source==null||Balls.Count>=60)return;Held=new Ball{X=p.X,Y=p.Y,Held=true,Loose=true,CarrySource=source};Balls.Add(Held);}if(Tool==Tool.Snowball){Held=PickBall(p);if(Held==null){if(PickSnow(p)==null||Balls.Count>=60)return;Held=new Ball{X=p.X,Y=p.Y,Held=true};Balls.Add(Held);}Held.Held=true;Held.ThrowArmed=false;Held.Support=null;Held.OnBall=null;Held.Face=false;foreach(var b in Balls)if(b.OnBall==Held){b.OnBall=null;b.Support=null;b.Face=false;}}Drag(p);}
+  public void Drag(PointF p){if(Paused||Tool==Tool.None&&HeldBrick==null)return;double dx=p.X-previousPointer.X,dy=p.Y-previousPointer.Y;if(dx*dx+dy*dy>.0025){double movementTime=Math.Max(.008,Time-prevPointerTime);lastThrowVX=Math.Max(-1800,Math.Min(1800,dx/movementTime));lastThrowVY=Math.Max(-1800,Math.Min(1800,dy/movementTime));lastMoveTime=Time;}int n=Math.Max(1,(int)Math.Ceiling(Math.Sqrt(dx*dx+dy*dy)/5));n=Math.Min(n,3000);
+   for(int j=1;j<=n;j++){double x=previousPointer.X+dx*j/n,y=previousPointer.Y+dy*j/n;if(HeldBrick!=null){if(Tool==Tool.Brick)CollectBrick(x,y);continue;}foreach(var s in Surfaces){bool wrap=s.WrapContains(x,y);double sx=Math.Max(s.Left,Math.Min(s.Left+s.Width-.01,x));if(!s.Active||(!wrap&&(x<s.Left||x>=s.Left+s.Width))||!s.Visible(sx,Math.Min(y,s.Y-1)))continue;if(!wrap&&Math.Abs(y-(s.Y-s.Height(x)))>48)continue;
      if((Tool==Tool.Snowball||Tool==Tool.Handful)&&Held!=null){double cap=Tool==Tool.Handful?22:52;double q=s.Take(x,Tool==Tool.Handful?18:20,Math.Max(0,Math.PI*cap*cap-Held.Area));Held.Area+=q;if(q>0&&Sound!=null)Sound("ball",q);}else if(Tool==Tool.Mitten||Tool==Tool.Shovel){double q=s.Take(x,Tool==Tool.Mitten?24:65,double.MaxValue);if(q>0){if(Sound!=null)Sound(Tool==Tool.Mitten?"mitten":"shovel",q);if(Tool==Tool.Mitten)Debris(x,y,2);}}
-   }}if(Held!=null){Held.X=p.X;Held.Y=p.Y;}previousPointer=p;prevPointerTime=Time;samples.Enqueue(new PointerSample(p,Time));while(samples.Count>1&&Time-samples.Peek().T>.11)samples.Dequeue();
+   }}if(HeldBrick!=null){HeldBrick.X=p.X;HeldBrick.Y=p.Y;}if(Held!=null){Held.X=p.X;Held.Y=p.Y;}previousPointer=p;prevPointerTime=Time;samples.Enqueue(new PointerSample(p,Time));while(samples.Count>1&&Time-samples.Peek().T>.11)samples.Dequeue();
   }
-  public void EndDrag(PointF p){Drag(p);ToolDown=false;if(Held!=null){var first=samples.Count>0?samples.Peek():new PointerSample(p,Time);double dt=Time-first.T;Held.Held=false;if(Held.Radius>=4&&Sound!=null)Sound("ball",Held.Area);if(dt>.008){Held.VX=Math.Max(-1800,Math.Min(1800,(p.X-first.P.X)/dt));Held.VY=Math.Max(-1800,Math.Min(1800,(p.Y-first.P.Y)/dt));}
+  public void EndDrag(PointF p){Drag(p);ToolDown=false;if(HeldBrick!=null){DropBrick(false);samples.Clear();return;}if(Held!=null){var first=samples.Count>0?samples.Peek():new PointerSample(p,Time);double dt=Time-first.T;Held.Held=false;if(Held.Radius>=4&&Sound!=null)Sound("ball",Held.Area);if(dt>.008){Held.VX=Math.Max(-1800,Math.Min(1800,(p.X-first.P.X)/dt));Held.VY=Math.Max(-1800,Math.Min(1800,(p.Y-first.P.Y)/dt));}
     if(Held.Loose){var carried=Held;Held=null;if(Time-lastMoveTime<=.18){carried.VX=lastThrowVX;carried.VY=lastThrowVY;double length=Math.Sqrt(carried.VX*carried.VX+carried.VY*carried.VY);if(length>0&&length<120){carried.VX*=120/length;carried.VY*=120/length;}}else carried.VX=carried.VY=0;carried.X=p.X;carried.Y=p.Y;var source=carried.CarrySource;if(source!=null&&p.X>=source.Left&&p.X<source.Left+source.Width){double clearance=source.Y-source.Height(p.X)-carried.Radius-12;if(carried.Y>=clearance){carried.Y=clearance;carried.VY=Math.Min(-110,carried.VY);}}if(Flakes.Count<EffectiveLimit){Balls.Remove(carried);Scatter(carried.Area,carried.X,carried.Y,carried.VX,carried.VY,source,true);}samples.Clear();return;}Held.ThrowArmed=Math.Sqrt(Held.VX*Held.VX+Held.VY*Held.VY)>=650;
     // A sphere collected at the edge starts partly inside the support plane.
     // Lift it onto that plane before the swept integrator takes over.
@@ -175,3 +179,5 @@ namespace Sneg {
     if(Held.Radius<4)Balls.Remove(Held);Held=null;}samples.Clear();}
  }
 }
+
+

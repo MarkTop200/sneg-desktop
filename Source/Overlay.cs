@@ -23,8 +23,8 @@ namespace Sneg {
   protected override CreateParams CreateParams{get{var p=base.CreateParams;p.ExStyle|=Native.Layered;if(!(App!=null&&App.Lab&&Input))p.ExStyle|=Native.ToolWindow|Native.NoActivate;if(!Input)p.ExStyle|=Native.Transparent;return p;}}
   protected override void OnHandleCreated(EventArgs e){base.OnHandleCreated(e);registeredHandle=Handle;App.Tracker.Excluded.Add(registeredHandle);if(buffer!=null)buffer.Dispose();buffer=new LayerBuffer(Width,Height);wasBlank=false;}
   protected override void OnHandleDestroyed(EventArgs e){if(App!=null)App.Tracker.Excluded.Remove(registeredHandle);registeredHandle=IntPtr.Zero;if(buffer!=null){buffer.Dispose();buffer=null;}base.OnHandleDestroyed(e);}
-  public void Render(){if(buffer==null)return;bool blank=!App.Enabled||App.SystemPause||Input&&(App.World.Tool==Tool.None||App.World.Paused);if(blank&&wasBlank)return;wasBlank=blank;var g=buffer.G;g.ResetTransform();g.ResetClip();g.CompositingMode=CompositingMode.SourceCopy;g.Clear(Color.Transparent);g.CompositingMode=CompositingMode.SourceOver;g.TranslateTransform(-ScreenBounds.X,-ScreenBounds.Y);g.SetClip(ScreenBounds);
-   if(App.Enabled&&!App.SystemPause&&(!Input||App.World.Tool!=Tool.None&&!App.World.Paused))ScenePainter.Draw(g,App.World,Input,App.Settings.Diagnostics&&!Input,App.FrameMs);
+  public void Render(){if(buffer==null)return;bool blank=!App.Enabled||App.SystemPause||Input&&(App.World.Paused||App.World.Tool==Tool.None&&App.World.Bricks.Count==0);if(blank&&wasBlank)return;wasBlank=blank;var g=buffer.G;g.ResetTransform();g.ResetClip();g.CompositingMode=CompositingMode.SourceCopy;g.Clear(Color.Transparent);g.CompositingMode=CompositingMode.SourceOver;g.TranslateTransform(-ScreenBounds.X,-ScreenBounds.Y);g.SetClip(ScreenBounds);
+   if(App.Enabled&&!App.SystemPause&&(!Input||(App.World.Tool!=Tool.None||App.World.Bricks.Count>0)&&!App.World.Paused))ScenePainter.Draw(g,App.World,Input,App.Settings.Diagnostics&&!Input,App.FrameMs);
    g.Flush();var point=new Native.Pt(ScreenBounds.X,ScreenBounds.Y);var size=new Native.Sz(Width,Height);var zero=new Native.Pt(0,0);var blend=new Native.Blend{Op=0,Alpha=255,Format=1};
    if(!Native.UpdateLayeredWindow(Handle,IntPtr.Zero,ref point,ref size,buffer.DC,ref zero,0,ref blend,2))throw new Win32Exception(Marshal.GetLastWin32Error(),"Не удалось обновить прозрачный слой");
   }
@@ -65,7 +65,7 @@ namespace Sneg {
    }
    path.CloseFigure();return path;
   }
-  public static void Draw(Graphics g,SnowWorld w,bool input,bool debug,double frame){
+  public static void Draw(Graphics g,SnowWorld w,bool input,bool debug,double frame){if(input&&w.Tool==Tool.None){foreach(var brick in w.Bricks)BrickArt.Draw(g,brick,true,false);return;}
    if(!input){foreach(var f in w.Flakes){if(f.Clump)SnowArt.Heap(g,f);else using(var b=new SolidBrush(Color.FromArgb(f.Alpha,244,250,255)))g.FillEllipse(b,(float)(f.X-f.Radius),(float)(f.Y-f.Radius),(float)(f.Radius*2),(float)(f.Radius*2));}}
    foreach(var s in w.Surfaces)if(s.Active){var state=g.Save();foreach(var r in s.Occluders)g.ExcludeClip(r);
     using(var path=SnowPath(s)){if(path.PointCount>0){if(input)g.FillPath(Hit,path);else SnowArt.Drift(g,path,s);}}
@@ -76,6 +76,7 @@ namespace Sneg {
     if(input)g.FillEllipse(Hit,x,y,d,d);else if(b.Loose)SnowArt.Heap(g,new Flake{X=b.X,Y=b.Y,Radius=b.Radius,Phase=2});else SnowArt.Sphere(g,(float)b.X,(float)b.Y,(float)b.Radius);
     g.Restore(state);
    }
+   foreach(var brick in w.Bricks)BrickArt.Draw(g,brick,input,w.Tool==Tool.Brick);
    if(!input)foreach(var b in w.Balls)if(b.Face&&b.Visible&&b.OnBall!=null){var state=g.Save();if(b.Support!=null)foreach(var r in b.Support.Occluders)g.ExcludeClip(r);SnowArt.Snowman(g,b);g.Restore(state);}
    if(!input&&w.Plowing)foreach(var s in w.Surfaces)if(s.Floor){if(s.PlowBank>1&&w.PlowX+w.PlowDirection*48>=s.Left&&w.PlowX+w.PlowDirection*48<s.Left+s.Width){double r=Math.Min(26,5+Math.Sqrt(s.PlowBank)*.13);SnowArt.Heap(g,new Flake{X=w.PlowX+w.PlowDirection*56,Y=s.Y-r*.65,Radius=r,Phase=1,Spin=0});}SnowArt.Vehicle(g,(float)w.PlowX,(float)s.Y,w.Time,w.PlowDirection);}
    if(!input)ToolArt.DrawPointer(g,w);
